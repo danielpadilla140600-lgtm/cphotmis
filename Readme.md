@@ -1126,7 +1126,8 @@ erDiagram
 
 Optional:
 - `GEMINI_API_KEY` — required for the AI photography guide chatbot
-- SMTP credentials — required for email notifications
+- `RESEND_API_KEY` and `RESEND_FROM_EMAIL` — recommended for email notifications on Render; the sender address must belong to a verified Resend domain
+- SMTP credentials — optional fallback for hosts that allow outbound SMTP
 - `GOOGLE_CLIENT_ID` / `VITE_GOOGLE_CLIENT_ID` — required for Google OAuth sign-in
 - Cloudinary credentials — optional; falls back to local `protected-media/` storage
 
@@ -1158,12 +1159,15 @@ Optional:
    GEMINI_API_KEY=your_gemini_api_key
 
    # ── Email notifications (optional) ──────────────────
-   # Gmail requires 2FA + an App Password from myaccount.google.com
-   SMTP_EMAIL=your_gmail@gmail.com
-   SMTP_APP_PASSWORD=your_app_password
+   # Recommended for Render: create an API key in Resend and verify the sender domain.
+   # RESEND_API_KEY=re_...
+   # RESEND_FROM_EMAIL=notifications@your-verified-domain.com
    EMAIL_FROM_NAME=Cainta Photography Studio MIS
 
-   # Custom SMTP host (optional, defaults to smtp.gmail.com:465)
+   # Optional SMTP fallback for hosts that allow outbound SMTP.
+   # Gmail requires 2FA + an App Password from myaccount.google.com.
+   # SMTP_EMAIL=your_gmail@gmail.com
+   # SMTP_APP_PASSWORD=your_app_password
    # SMTP_HOST=smtp.gmail.com
    # SMTP_PORT=465
    # SMTP_SECURE=true

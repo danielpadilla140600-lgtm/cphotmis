@@ -306,14 +306,18 @@ app.use((req, res, next) => {
 });
 
 // ----------------------------------------------------
-// SMTP EMAIL NOTIFICATION TRANSPORTER SETUP
-// Works on Render (root .env) and Firebase Functions (functions/.env)
-// Gmail requires: 2FA enabled + App Password generated in Google Account
-// Firebase Functions (Blaze plan) allows outbound SMTP on port 587/465.
+// EMAIL NOTIFICATION TRANSPORT SETUP
+// Resend uses HTTPS and works on hosts that restrict outbound SMTP.
+// SMTP remains available as a fallback for local and other deployments.
 // ----------------------------------------------------
 const smtpEmail = (process.env.SMTP_EMAIL || "").trim();
 const smtpPassword = (process.env.SMTP_APP_PASSWORD || "").trim().replace(/\s+/g, "");
-// Optional: custom SMTP host/port for non-Gmail providers (e.g. SendGrid, Mailgun)
+const resendApiKey = (process.env.RESEND_API_KEY || "").trim();
+const resendFromEmail = (process.env.RESEND_FROM_EMAIL || "").trim();
+const isResendConfigured = !!(resendApiKey && resendFromEmail);
+const isSmtpConfigured = !!(smtpEmail && smtpPassword);
+const emailSender = resendApiKey ? resendFromEmail : smtpEmail;
+// Optional: custom SMTP host/port for providers that support SMTP.
 const smtpHost = (process.env.SMTP_HOST || "smtp.gmail.com").trim();
 const smtpPort = parseInt(process.env.SMTP_PORT || "465", 10);
 const smtpSecure = process.env.SMTP_SECURE !== "false"; // default true (SSL/TLS)
@@ -323,7 +327,7 @@ const smtpFromName = (process.env.EMAIL_FROM_NAME || "Cainta Photography Studio 
 let mailTransporter: nodemailer.Transporter | null = null;
 
 function createMailTransporter(): nodemailer.Transporter | null {
-  if (!smtpEmail || !smtpPassword) {
+  if (!isSmtpConfigured) {
     console.log("[SMTP] Notice: SMTP_EMAIL or SMTP_APP_PASSWORD not set — email disabled.");
     return null;
   }
@@ -344,7 +348,13 @@ function createMailTransporter(): nodemailer.Transporter | null {
   } as nodemailer.TransportOptions);
 }
 
-if (smtpEmail && smtpPassword) {
+if (resendApiKey) {
+  if (isResendConfigured) {
+    console.log(`[Email] Resend API configured — sender: ${smtpFromName} <${resendFromEmail}>`);
+  } else {
+    console.error("[Email] RESEND_API_KEY is set but no sender is configured. Set RESEND_FROM_EMAIL to an address verified by Resend.");
+  }
+} else if (isSmtpConfigured) {
   mailTransporter = createMailTransporter();
   if (mailTransporter) {
     mailTransporter.verify((error) => {
@@ -371,13 +381,16 @@ async function sendEmailNotification(
   actionLabel?: string,
   attachments?: Array<{ filename: string; content: Buffer | string; contentType?: string }>
 ): Promise<boolean> {
-  // Lazy re-init: in serverless environments the transporter may not have been
-  // created at cold-start if env vars are injected after module load.
-  if (!mailTransporter && smtpEmail && smtpPassword) {
+  // Lazy re-init for environments that inject SMTP settings after module load.
+  if (!resendApiKey && !mailTransporter && isSmtpConfigured) {
     mailTransporter = createMailTransporter();
   }
-  if (!mailTransporter || !smtpEmail) {
-    console.log(`[SMTP Simulated] Email to ${toEmail}: [${title}] ${message}`);
+  if (resendApiKey && !isResendConfigured) {
+    console.error("[Email] Resend is enabled but RESEND_FROM_EMAIL is missing.");
+    return false;
+  }
+  if (!isResendConfigured && !mailTransporter) {
+    console.log(`[Email Simulated] Email to ${toEmail}: [${title}] ${message}`);
     return false;
   }
 
@@ -544,22 +557,59 @@ async function sendEmailNotification(
   `;
 
   try {
-    await mailTransporter.sendMail({
-      from: `"${smtpFromName}" <${smtpEmail}>`,
-      to: toEmail,
-      subject: `[Cainta Photography] ${title}`,
-      text: `${title}\n\n${message}\n\nTimestamp: ${dateFormatted}\n\n-- Cainta Photography Studio MIS`,
-      html: htmlContent,
-      attachments: attachments?.map(item => ({
-        filename: item.filename,
-        content: item.content,
-        contentType: item.contentType || "application/octet-stream"
-      }))
-    });
-    console.log(`[SMTP] Successfully delivered email notification to ${toEmail} for: "${title}"`);
+    const subject = `[Cainta Photography] ${title}`;
+    const text = `${title}\n\n${message}\n\nTimestamp: ${dateFormatted}\n\n-- Cainta Photography Studio MIS`;
+    if (isResendConfigured) {
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          from: `${smtpFromName} <${resendFromEmail}>`,
+          to: [toEmail],
+          subject,
+          text,
+          html: htmlContent,
+          attachments: attachments?.map(item => ({
+            filename: item.filename,
+            content: (Buffer.isBuffer(item.content) ? item.content : Buffer.from(item.content)).toString("base64"),
+            content_type: item.contentType || "application/octet-stream"
+          }))
+        })
+      });
+
+      if (!response.ok) {
+        const responseText = await response.text();
+        let detail = responseText || response.statusText;
+        try {
+          const responseData = JSON.parse(responseText);
+          detail = responseData.message || responseData.name || detail;
+        } catch {
+          // Keep the response text when the provider does not return JSON.
+        }
+        throw new Error(`Resend API request failed (${response.status}): ${detail}`);
+      }
+      console.log(`[Resend] Successfully delivered email notification to ${toEmail} for: "${title}"`);
+    } else {
+      await mailTransporter!.sendMail({
+        from: `"${smtpFromName}" <${smtpEmail}>`,
+        to: toEmail,
+        subject,
+        text,
+        html: htmlContent,
+        attachments: attachments?.map(item => ({
+          filename: item.filename,
+          content: item.content,
+          contentType: item.contentType || "application/octet-stream"
+        }))
+      });
+      console.log(`[SMTP] Successfully delivered email notification to ${toEmail} for: "${title}"`);
+    }
     return true;
   } catch (err: any) {
-    console.error(`[SMTP] Failed to send email to ${toEmail}:`, err?.message || err);
+    console.error(`[${isResendConfigured ? "Resend" : "SMTP"}] Failed to send email to ${toEmail}:`, err?.message || err);
     return false;
   }
 }
@@ -1636,52 +1686,66 @@ app.get("/api/system/demo-video", (_req, res) => {
   });
 });
 
-// SMTP Status & Test Email Dispatch Endpoint
+// Email Status & Test Email Dispatch Endpoint
 app.get("/api/admin/smtp-status", (req, res) => {
   if (!requireRole(req, res, UserRole.SUPER_ADMIN)) return;
+  const activeProvider = isResendConfigured
+    ? "Resend API"
+    : isSmtpConfigured && !resendApiKey
+      ? (smtpHost === "smtp.gmail.com" ? "Gmail SMTP" : smtpHost)
+      : resendApiKey
+        ? "Resend API (incomplete configuration)"
+        : "Not configured";
   res.json({
     success: true,
-    isConfigured: !!(smtpEmail && smtpPassword),
-    senderEmail: smtpEmail || "Not configured",
+    isConfigured: isResendConfigured || (!resendApiKey && isSmtpConfigured),
+    senderEmail: emailSender || "Not configured",
+    provider: activeProvider,
     smtpHost,
     smtpPort,
     smtpSecure,
     fromName: smtpFromName,
-    service: smtpHost === "smtp.gmail.com" ? "Gmail SMTP" : smtpHost
+    service: activeProvider
   });
 });
 
-app.post("/api/admin/send-test-email", async (req, res) => {
+const dispatchTestEmail = async (req: express.Request, res: express.Response) => {
   if (!requireRole(req, res, UserRole.SUPER_ADMIN)) return;
-  const { toEmail } = req.body;
-  const targetEmail = toEmail || smtpEmail;
+  const { to, toEmail } = req.body;
+  const targetEmail = to || toEmail || emailSender;
 
   if (!targetEmail) {
     return res.status(400).json({ success: false, message: "No recipient email address specified." });
   }
 
-  if (!mailTransporter || !smtpEmail) {
+  if (!isResendConfigured && (!mailTransporter || !smtpEmail)) {
     return res.status(500).json({
       success: false,
-      message: "SMTP is not active. Please check SMTP_EMAIL and SMTP_APP_PASSWORD in .env."
+      message: "Email delivery is not configured. Configure RESEND_API_KEY and RESEND_FROM_EMAIL, or valid SMTP settings."
     });
   }
 
   try {
-    await sendEmailNotification(
+    const delivered = await sendEmailNotification(
       targetEmail,
       "Test Notification from Cainta Photography MIS",
-      "Congratulations! Your Gmail SMTP configuration is fully operational. Real-time booking confirmations, payment approvals, studio applications, and client proofing notifications will now be delivered to your inbox automatically.",
+      "Congratulations! Your email delivery configuration is operational. Real-time booking confirmations, payment approvals, studio applications, and client proofing notifications can now be delivered to your inbox automatically.",
       "success"
     );
+    if (!delivered) {
+      return res.status(502).json({ success: false, message: "The email provider did not accept the test message. Check the Render logs for the provider error." });
+    }
     res.json({
       success: true,
-      message: `Test email notification successfully sent to ${targetEmail} via Gmail SMTP!`
+      message: `Test email notification successfully sent to ${targetEmail} via ${isResendConfigured ? "Resend" : "SMTP"}.`
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: `SMTP error: ${err?.message || "Failed to dispatch email"}` });
+    res.status(500).json({ success: false, message: `Email delivery error: ${err?.message || "Failed to dispatch email"}` });
   }
-});
+};
+
+app.post("/api/admin/test-email", dispatchTestEmail);
+app.post("/api/admin/send-test-email", dispatchTestEmail);
 
 // Custom Pages Builder Endpoints
 app.get("/api/custom-pages", (req, res) => {

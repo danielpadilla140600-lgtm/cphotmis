@@ -3303,11 +3303,11 @@ export default function AdminDashboard({
                     </div>
                   )}
 
-                  {/* SMTP Status */}
+                  {/* Email Delivery Status */}
                   {smtpStatus && (
                     <div className="bg-[#faf9f6] border border-[#e5e1da] rounded-2xl p-5 space-y-3 text-xs">
                       <h5 className="font-display font-bold text-sm text-[#2c2a29] flex items-center gap-2">
-                        <Mail size={16} className="text-yellow-600" /> Email Notifications Configuration (SMTP)
+                        <Mail size={16} className="text-yellow-600" /> Email Notifications Configuration
                       </h5>
                       <p className="text-gray-600">Sender: <strong>{smtpStatus.senderEmail}</strong> · Service: <strong>{smtpStatus.service}</strong></p>
                       <div className="flex gap-2">
