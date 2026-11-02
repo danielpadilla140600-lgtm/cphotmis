@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files (contains secrets)
+.env
+.env.local
+.env.*.local
+
+# Local database dump and private customer media
+cainta_photography_mis.sql
+protected-media/
+
+# Logs
+*.log
+server-dev.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Bun
+bun.lockb
