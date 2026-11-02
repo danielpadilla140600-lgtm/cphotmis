@@ -22,6 +22,12 @@ describe("Resend email delivery for hosted deployments", () => {
     expect(serverSource).toContain('if (!response.ok)');
   });
 
+  it("uses the hosted system URL for email access buttons by default", () => {
+    expect(serverSource).toContain('process.env.FRONTEND_URL || "https://cphotmis.vercel.app"');
+    expect(serverSource).toContain('actionUrl || systemAccessUrl');
+    expect(serverSource).not.toContain("actionUrl || 'http://localhost:3000'");
+  });
+
   it("routes the admin test-email control to the server endpoint", () => {
     expect(adminSource).toContain('apiRequest("/api/admin/test-email"');
     expect(serverSource).toContain('app.post("/api/admin/test-email", dispatchTestEmail)');

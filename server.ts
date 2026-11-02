@@ -372,6 +372,8 @@ if (resendApiKey) {
 }
 
 // Rich HTML Email Dispatcher (High-End Luxury Studio Design)
+const systemAccessUrl = (process.env.FRONTEND_URL || "https://cphotmis.vercel.app").replace(/\/+$/, "");
+
 async function sendEmailNotification(
   toEmail: string, 
   title: string, 
@@ -516,7 +518,7 @@ async function sendEmailNotification(
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td align="center">
-                    <a href="${actionUrl || 'http://localhost:3000'}" style="display: inline-block; background-color: #1c1917; color: #ffffff; text-decoration: none; font-size: 12px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; padding: 14px 32px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.12);">
+                    <a href="${actionUrl || systemAccessUrl}" style="display: inline-block; background-color: #1c1917; color: #ffffff; text-decoration: none; font-size: 12px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; padding: 14px 32px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.12);">
                       ${actionLabel || 'Access Studio MIS Portal →'}
                     </a>
                   </td>
