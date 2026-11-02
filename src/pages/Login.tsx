@@ -7,6 +7,7 @@ import { LogIn, Key, Mail, ShieldAlert, Sparkles, User, Camera, Shield, Briefcas
 import { motion, AnimatePresence } from "motion/react";
 import { UserRole } from "../db/types.ts";
 import { apiRequest, ApiError } from "../utils/apiClient.ts";
+import { geocodeStudioAddress, reverseGeocodeStudioAddress } from "../utils/studioGeocoding.ts";
 
 interface LoginProps {
   onLoginSuccess: (user: any) => void;
@@ -17,16 +18,6 @@ interface LoginProps {
 export default function Login({ onLoginSuccess, onNavigate, cms }: LoginProps) {
   const [isRegister, setIsRegister] = useState(false);
 
-  const resolveLocalCaintaCoordinates = (query: string): [number, number] => {
-    const normalized = query.toLowerCase();
-    if (normalized.includes("ortigas") || normalized.includes("valley golf")) return [14.5882, 121.1278];
-    if (normalized.includes("felix") || normalized.includes("rublou") || normalized.includes("marketplace")) return [14.5954, 121.1085];
-    if (normalized.includes("imelda") || normalized.includes("bypass")) return [14.5825, 121.1002];
-    if (normalized.includes("town") || normalized.includes("san roque") || normalized.includes("bonifacio")) return [14.5772, 121.1224];
-    if (normalized.includes("vista") || normalized.includes("vista verde")) return [14.6010, 121.1120];
-    return [14.5882, 121.1278];
-  };
-  
   // Login form
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -62,28 +53,103 @@ export default function Login({ onLoginSuccess, onNavigate, cms }: LoginProps) {
   const regMapContainerRef = useRef<HTMLDivElement | null>(null);
   const regMapRef = useRef<L.Map | null>(null);
   const regMarkerRef = useRef<L.Marker | null>(null);
+  const regGeocodingControllerRef = useRef<AbortController | null>(null);
+  const skipForwardGeocodeRef = useRef("");
 
-  const handleStudioAddressSearch = async () => {
-    const query = regAddressSearch.trim();
-    if (!query) return;
+  const cancelStudioGeocoding = () => {
+    regGeocodingControllerRef.current?.abort();
+    regGeocodingControllerRef.current = null;
+    setRegAddressSearchLoading(false);
+  };
 
+  const moveRegistrationPin = (latitude: number, longitude: number) => {
+    const nextLatitude = Number(latitude.toFixed(6));
+    const nextLongitude = Number(longitude.toFixed(6));
+    setRegLatitude(nextLatitude);
+    setRegLongitude(nextLongitude);
+    regMarkerRef.current?.setLatLng([nextLatitude, nextLongitude]);
+    regMapRef.current?.setView([nextLatitude, nextLongitude], 17);
+  };
+
+  const handleStudioAddressSearch = async (
+    query: string,
+    updateAddress = false
+  ) => {
+    const address = query.trim();
+    if (!address) return;
+
+    cancelStudioGeocoding();
+    const controller = new AbortController();
+    regGeocodingControllerRef.current = controller;
     setRegAddressSearchLoading(true);
     setRegAddressSearchError("");
     try {
-      const [latitude, longitude] = resolveLocalCaintaCoordinates(query);
-      const nextLatitude = Number(latitude.toFixed(6));
-      const nextLongitude = Number(longitude.toFixed(6));
-      setRegLatitude(nextLatitude);
-      setRegLongitude(nextLongitude);
-      setRegStudioAddress(query);
-      regMarkerRef.current?.setLatLng([nextLatitude, nextLongitude]);
-      regMapRef.current?.setView([nextLatitude, nextLongitude], 17);
-    } catch {
-      setRegAddressSearchError("Unable to search right now. You can still click the map or drag the pin.");
+      const location = await geocodeStudioAddress(address, controller.signal);
+      if (regGeocodingControllerRef.current !== controller) return;
+      moveRegistrationPin(location.latitude, location.longitude);
+      if (updateAddress) {
+        skipForwardGeocodeRef.current = address;
+        setRegStudioAddress(address);
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setRegAddressSearchError(
+        error instanceof Error
+          ? error.message
+          : "Unable to search right now. You can still click the map or drag the pin."
+      );
     } finally {
-      setRegAddressSearchLoading(false);
+      if (regGeocodingControllerRef.current === controller) {
+        regGeocodingControllerRef.current = null;
+        setRegAddressSearchLoading(false);
+      }
     }
   };
+
+  const handlePinLocationChange = async (latitude: number, longitude: number) => {
+    moveRegistrationPin(latitude, longitude);
+    cancelStudioGeocoding();
+    const controller = new AbortController();
+    regGeocodingControllerRef.current = controller;
+    setRegAddressSearchLoading(true);
+    setRegAddressSearchError("");
+    try {
+      const location = await reverseGeocodeStudioAddress(latitude, longitude, controller.signal);
+      if (regGeocodingControllerRef.current !== controller) return;
+      skipForwardGeocodeRef.current = location.address;
+      setRegStudioAddress(location.address);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setRegAddressSearchError(
+        error instanceof Error
+          ? error.message
+          : "Unable to find an address for this pin. You can enter the exact address manually."
+      );
+    } finally {
+      if (regGeocodingControllerRef.current === controller) {
+        regGeocodingControllerRef.current = null;
+        setRegAddressSearchLoading(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const query = regStudioAddress.trim();
+    if (!isRegister || regRole !== UserRole.STUDIO_ADMIN || query.length < 8) return;
+    if (skipForwardGeocodeRef.current === query) {
+      skipForwardGeocodeRef.current = "";
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void handleStudioAddressSearch(query);
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [isRegister, regRole, regStudioAddress]);
+
+  useEffect(() => () => {
+    regGeocodingControllerRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (!isRegister || regRole !== UserRole.STUDIO_ADMIN || !regMapContainerRef.current) return;
@@ -123,20 +189,13 @@ export default function Login({ onLoginSuccess, onNavigate, cms }: LoginProps) {
     const marker = L.marker([regLatitude, regLongitude], { draggable: true }).addTo(map);
     marker.bindTooltip("Drag or click to pin your studio", { permanent: true, direction: "top" });
 
-    const updateLocation = (lat: number, lng: number) => {
-      const nextLatitude = Number(lat.toFixed(6));
-      const nextLongitude = Number(lng.toFixed(6));
-      setRegLatitude(nextLatitude);
-      setRegLongitude(nextLongitude);
-    };
-
     marker.on("dragend", () => {
       const position = marker.getLatLng();
-      updateLocation(position.lat, position.lng);
+      void handlePinLocationChange(position.lat, position.lng);
     });
     map.on("click", event => {
       marker.setLatLng(event.latlng);
-      updateLocation(event.latlng.lat, event.latlng.lng);
+      void handlePinLocationChange(event.latlng.lat, event.latlng.lng);
     });
     regMapRef.current = map;
     regMarkerRef.current = marker;
@@ -738,14 +797,18 @@ export default function Login({ onLoginSuccess, onNavigate, cms }: LoginProps) {
                               <input
                                 type="search"
                                 value={regAddressSearch}
-                                onChange={e => setRegAddressSearch(e.target.value)}
+                                onChange={e => {
+                                  cancelStudioGeocoding();
+                                  setRegAddressSearchError("");
+                                  setRegAddressSearch(e.target.value);
+                                }}
                                 placeholder="Search street, building, or landmark"
                                 className="w-full bg-white border border-emerald-200 rounded-xl pl-9 pr-3 py-2.5 text-xs focus:outline-none focus:border-emerald-600"
                               />
                             </div>
                             <button
                               type="button"
-                              onClick={handleStudioAddressSearch}
+                              onClick={() => void handleStudioAddressSearch(regAddressSearch, true)}
                               disabled={regAddressSearchLoading || !regAddressSearch.trim()}
                               className="px-3 py-2 bg-emerald-700 text-white rounded-xl text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed hover:bg-emerald-800"
                             >
@@ -763,11 +826,19 @@ export default function Login({ onLoginSuccess, onNavigate, cms }: LoginProps) {
                             type="text"
                             required
                             value={regStudioAddress}
-                            onChange={e => setRegStudioAddress(e.target.value)}
+                            onChange={e => {
+                              cancelStudioGeocoding();
+                              skipForwardGeocodeRef.current = "";
+                              setRegAddressSearchError("");
+                              setRegStudioAddress(e.target.value);
+                            }}
                             placeholder="Unit, building, street, barangay, Cainta, Rizal"
                             className="w-full bg-white border border-emerald-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-emerald-600"
                           />
-                          <p className="text-[10px] text-gray-500">Click or drag the pin to update the suggested address, then correct it if needed.</p>
+                          <p className="text-[10px] text-gray-500">
+                            Type an address to move the pin automatically, or click/drag the pin to fill in its suggested address. Verify the result before registering.
+                          </p>
+                          <p className="text-[10px] text-gray-400">Address lookup by OpenStreetMap contributors.</p>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           <div className="space-y-1">
